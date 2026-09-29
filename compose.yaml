@@ -24,6 +24,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - ./alembic/versions:/code/alembic/versions
 
 volumes:
   postgres_data:
