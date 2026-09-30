@@ -6,11 +6,13 @@ from app.core.config import get_settings
 from app.core.database import engine
 
 from app.routers.auth import router as auth_router
+from app.routers.catalogue import router as catalogue_router
 
 app = FastAPI(title=get_settings().app_name)
 
 
 app.include_router(auth_router)
+app.include_router(catalogue_router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
