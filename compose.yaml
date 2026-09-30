@@ -19,6 +19,7 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg://eve_user:eve_password@db:5432/eve_booking
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env}
     ports:
       - "8000:8000"
     depends_on:
