@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class PaymentCreate(BaseModel):
     booking_id: int = Field(gt=0)
-    outcome:Literal["SUCCESS", "FAILURE"]
+    outcome:Literal["SUCCESS", "FAILED"]
 
 
 class PaymentResponse(BaseModel):

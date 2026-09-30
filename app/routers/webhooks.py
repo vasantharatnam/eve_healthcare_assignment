@@ -25,7 +25,7 @@ def duplicate_response(
 
     if event.payload != payload:
         raise HTTPException(
-            statuscode= status.HTTP_409_CONFLICT,
+            status_code= status.HTTP_409_CONFLICT,
             detail = "Event ID was already used with different content.",
         )
     
