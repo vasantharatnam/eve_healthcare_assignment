@@ -1,60 +1,67 @@
-
 # EVE Diagnostic Booking API
 
-A FastAPI and PostgreSQL backend for browsing diagnostic tests, creating bookings, and simulating payments. Docker Compose runs the API and database; Alembic manages the schema.
+A FastAPI and PostgreSQL backend for diagnostic test bookings and simulated payments.
 
 ## Features
 
-- User signup and login with Argon2 password hashing and JWT authentication
-- Public centre and diagnostic test catalogue with centre-specific prices
+- Signup and login with Argon2 password hashing and JWT authentication
+- Public APIs to browse diagnostic centres, tests, and centre-specific prices
+- Admin-only APIs to create and update centres, tests, and offerings
 - Authenticated booking creation and retrieval
-- Booking price snapshot at creation
-- Mock success and failed payment outcomes
-- Idempotent processing of payment webhook event IDs
-- Integration tests against a separate PostgreSQL test database
+- Booking price snapshot at creation time
+- Mock successful and failed payments
+- Idempotent payment webhook processing using unique event IDs
+- PostgreSQL migrations with Alembic
+- Integration tests using a separate test database
 
 ## Requirements
 
-- Docker and Docker Compose
+- Docker
+- Docker Compose
 
-## Start the application
+## Local setup
 
-Copy the sample configuration:
+Copy the example configuration:
 
 ```bash
 cp .env.example .env
 ```
 
-Generate **two different secrets**:
+Generate two different secrets:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-Set the generated values in `.env`:
+Set them in `.env`:
 
 ```dotenv
 JWT_SECRET_KEY=first-generated-value
 WEBHOOK_SECRET=second-generated-value
 ```
 
-The `DATABASE_URL` shown in `.env.example` is for connecting from your computer. Inside Docker, Compose supplies an API database URL using `db` as the hostname.
+Keep `.env` private. Docker Compose supplies the API container's `DATABASE_URL` using `db` as the PostgreSQL hostname.
 
-Start the services:
+Start the application:
 
 ```bash
 docker compose up -d --build
 ```
 
-Apply migrations and insert sample catalogue data:
+Apply the database migrations:
 
 ```bash
 docker compose run --rm api python -m alembic upgrade head
+```
+
+Insert sample centres, tests, and offerings:
+
+```bash
 docker compose run --rm api python -m app.seed_catalogue
 ```
 
-Check the API:
+Check that the API and database are reachable:
 
 ```bash
 curl http://localhost:8000/health
@@ -66,17 +73,71 @@ Expected response:
 {"status":"ok"}
 ```
 
-Interactive API documentation is available at http://localhost:8000/docs.
+Interactive API documentation: http://localhost:8000/docs
 
-To stop the services without deleting database data:
+To stop the services without removing the PostgreSQL volume:
 
 ```bash
 docker compose down
 ```
 
-## API flow
+## Create an admin account
 
-### 1. Create an account
+All accounts created through signup are **non-admin**. There is no public API for a user to grant themselves admin access.
+
+First, create an account:
+
+```bash
+curl -i -X POST http://localhost:8000/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"secure-password-123"}'
+```
+
+Promote that existing account from the local database container:
+
+```bash
+docker compose exec db psql -U eve_user -d eve_booking \
+  -c "UPDATE users SET is_admin = TRUE WHERE email = 'admin@example.com';"
+```
+
+The command must report `UPDATE 1`. `UPDATE 0` means that no account matches the email; check the signup response and the email used in the SQL command.
+
+You can verify the account:
+
+```bash
+docker compose exec db psql -U eve_user -d eve_booking \
+  -c "SELECT id, email, is_admin FROM users WHERE email = 'admin@example.com';"
+```
+
+Log in as the admin to obtain a JWT for catalogue management requests. Access to the Docker host and database is required to perform the promotion.
+
+## API endpoints
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| `GET` | `/health` | Public | Check API and database availability |
+| `POST` | `/auth/signup` | Public | Create a user |
+| `POST` | `/auth/login` | Public | Obtain a JWT |
+| `GET` | `/auth/me` | User | Get the authenticated user |
+| `GET` | `/centres` | Public | List centres |
+| `GET` | `/centres/{centre_id}/tests` | Public | List active offerings and prices |
+| `POST` | `/centres` | Admin | Create a centre |
+| `PATCH` | `/centres/{centre_id}` | Admin | Update a centre |
+| `POST` | `/tests` | Admin | Create a diagnostic test |
+| `PATCH` | `/tests/{test_id}` | Admin | Update a diagnostic test |
+| `POST` | `/centres/{centre_id}/tests` | Admin | Add a test offering to a centre |
+| `PATCH` | `/offerings/{offering_id}` | Admin | Change offering price or active state |
+| `POST` | `/bookings` | User | Create a booking |
+| `GET` | `/bookings` | User | List own bookings |
+| `GET` | `/bookings/{booking_id}` | User | View own booking |
+| `POST` | `/payments/` | User | Simulate a payment for own booking |
+| `POST` | `/payments/webhook/` | Webhook secret | Process a simulated provider notification |
+
+“User” endpoints require `Authorization: Bearer <JWT>`. “Admin” endpoints require the same header with a token belonging to an admin account. The webhook uses `X-Webhook-Secret` instead of a user JWT.
+
+## Example flow
+
+### 1. Sign up and log in
 
 ```bash
 curl -i -X POST http://localhost:8000/auth/signup \
@@ -84,28 +145,26 @@ curl -i -X POST http://localhost:8000/auth/signup \
   -d '{"email":"demo@example.com","password":"secure-password-123"}'
 ```
 
-### 2. Log in
-
 ```bash
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"demo@example.com","password":"secure-password-123"}'
 ```
 
-Copy `access_token` from the response. Use it as `Authorization: Bearer YOUR_ACCESS_TOKEN` on protected requests.
+Copy `access_token` from the login response and use it as `YOUR_ACCESS_TOKEN` below.
 
-### 3. Find an offering
+### 2. Find a test offering
 
 ```bash
 curl http://localhost:8000/centres
 curl http://localhost:8000/centres/1/tests
 ```
 
-Use an actual centre ID from the first response and an `offering_id` from the second. The catalogue endpoints do not require login.
+Replace `1` with a centre ID from the first response. The second response contains an `offering_id` to use when booking.
 
-### 4. Create a booking
+### 3. Create a booking
 
-Choose an appointment time in the future with an explicit timezone:
+Choose a future appointment time and include its timezone:
 
 ```bash
 curl -i -X POST http://localhost:8000/bookings \
@@ -117,11 +176,11 @@ curl -i -X POST http://localhost:8000/bookings \
   }'
 ```
 
-For example, the timestamp format is `2026-12-15T10:00:00+05:30`; choose a date that is still in the future when you run the request.
+A valid timestamp has a format such as `2026-12-15T10:00:00+05:30`, provided that date is still in the future when the request is sent.
 
-The booking starts as `PENDING`. Its `amount` is copied from the offering price at booking time.
+The booking starts as `PENDING`. It stores a copy of the offering price, so a later catalogue price change does not alter the booking amount.
 
-List or inspect your bookings:
+View your bookings:
 
 ```bash
 curl http://localhost:8000/bookings \
@@ -131,9 +190,11 @@ curl http://localhost:8000/bookings/BOOKING_ID \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
-### 5. Simulate a payment
+A user cannot view another user's booking.
 
-Replace `BOOKING_ID` with the ID returned by booking creation:
+### 4. Simulate a payment
+
+Use the ID of a pending booking:
 
 ```bash
 curl -i -X POST http://localhost:8000/payments/ \
@@ -142,13 +203,13 @@ curl -i -X POST http://localhost:8000/payments/ \
   -d '{"booking_id":BOOKING_ID,"outcome":"SUCCESS"}'
 ```
 
-The API records a `SUCCESS` payment and changes the booking to `CONFIRMED`. To try `FAILED`, create a separate booking and use `"outcome":"FAILED"`; that booking becomes `FAILED`.
+`SUCCESS` changes the booking to `CONFIRMED`; `FAILED` changes it to `FAILED`. To test both outcomes, create separate bookings. A second payment request for a final booking returns `409`.
 
-This is a **mock** payment. No external provider or real charge is involved. The user supplies the simulated outcome solely for demonstration.
+This endpoint does **not** contact a real payment provider. The request supplies the outcome only to simulate payment processing.
 
-### 6. Simulate a provider webhook
+### 5. Simulate a payment webhook
 
-Use the payment ID from step 5 and the `WEBHOOK_SECRET` from `.env`:
+Use the payment ID from the previous step and the secret in `.env`:
 
 ```bash
 curl -i -X POST http://localhost:8000/payments/webhook/ \
@@ -157,13 +218,46 @@ curl -i -X POST http://localhost:8000/payments/webhook/ \
   -d '{"event_id":"evt-demo-001","payment_id":PAYMENT_ID,"status":"SUCCESS"}'
 ```
 
-Send the **same request** again. The first response has `already_processed: false`; the retry has `already_processed: true`.
+Send the same request a second time. The first response has `already_processed: false`; the retry has `already_processed: true`.
 
-An event ID reused with different content, or an outcome contradicting the recorded payment, returns `409`.
+Reusing the same event ID with different content returns `409`. A new event that contradicts the recorded payment outcome also returns `409`. The event record and any payment/booking status updates are committed together.
 
-## Run tests
+### 6. Manage catalogue data as an admin
 
-The tests use a separate database named `eve_booking_test`. Create it once:
+Use the JWT obtained by logging in as the admin account.
+
+Create a centre:
+
+```bash
+curl -i -X POST http://localhost:8000/centres \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ADMIN_ACCESS_TOKEN" \
+  -d '{"name":"EVE Whitefield","address":"Whitefield, Bengaluru"}'
+```
+
+Create a diagnostic test:
+
+```bash
+curl -i -X POST http://localhost:8000/tests \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ADMIN_ACCESS_TOKEN" \
+  -d '{"name":"Vitamin D","description":"Vitamin D test"}'
+```
+
+Offer that test at the centre:
+
+```bash
+curl -i -X POST http://localhost:8000/centres/CENTRE_ID/tests \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ADMIN_ACCESS_TOKEN" \
+  -d '{"test_id":TEST_ID,"price":"700.00"}'
+```
+
+A normal logged-in user receives `403` for these management operations; a request without a JWT receives `401`.
+
+## Run the tests
+
+The test suite uses a separate database called `eve_booking_test`. Create it once:
 
 ```bash
 docker compose up -d db
@@ -171,7 +265,7 @@ docker compose exec db psql -U eve_user -d postgres \
   -c "CREATE DATABASE eve_booking_test OWNER eve_user;"
 ```
 
-Run the tests:
+If it already exists, do not recreate it. Build the current API image and run pytest:
 
 ```bash
 docker compose build api
@@ -180,35 +274,38 @@ docker compose run --rm \
   api python -m pytest -q tests
 ```
 
-The test fixture recreates tables **only in `eve_booking_test`** and rolls back each test's data. Do not set `TEST_DATABASE_URL` to the development database.
+The test fixture recreates tables only in `eve_booking_test`. Never point `TEST_DATABASE_URL` at `eve_booking`.
 
-## Data model
+## Database design
 
 | Table | Purpose |
 |---|---|
-| `users` | Accounts and password hashes |
-| `centres` | Diagnostic centres |
-| `diagnostic_tests` | Test definitions |
-| `centre_test_offerings` | Tests offered by each centre and their current prices |
-| `bookings` | User appointments, price snapshots, and booking status |
+| `users` | User accounts, password hashes, and admin flag |
+| `centres` | Diagnostic centre name and address/location |
+| `diagnostic_tests` | Definitions of diagnostic tests |
+| `centre_test_offerings` | A centre's available tests, active state, and current prices |
+| `bookings` | User, offering, appointment, saved amount, and booking status |
 | `payments` | Mock payment attempts and outcomes |
 | `webhook_events` | Received provider event IDs and payloads |
-| `alembic_version` | Applied migration revision |
+| `alembic_version` | Applied database migration revision |
 
-## Current behavior and assumptions
+An offering links one centre to one test. The database prevents adding the same test to the same centre twice.
 
-- Appointment times must be in the future and include a timezone.
-- The API does not manage slot capacity. Multiple users can book the same offering and time.
-- A payment can be attempted only while its booking is `PENDING`. Both `CONFIRMED` and `FAILED` bookings are final in this version.
-- The mock payment endpoint sets the final outcome immediately. A matching webhook records the notification; it normally does not change that outcome.
-- A webhook retry with the same `event_id` and payload is processed once. Different event IDs may be recorded for the same payment if their outcomes agree.
-- The webhook uses a shared secret for this exercise. There is no real provider integration, provider signature verification, or external charge.
-- Repeating a completed user payment request returns `409`. Client payment idempotency keys and returning the original response on retry are not implemented.
+## Assumptions and current limitations
 
-## Possible next improvements
+- Appointment timestamps must be in the future and include a timezone.
+- An appointment time does not reserve exclusive capacity. Multiple users can book the same offering and time.
+- Bookings start `PENDING`. In this version, payment changes them to `CONFIRMED` or `FAILED`; both are final. Cancellation is not implemented.
+- The mock payment endpoint sets the final outcome immediately. A matching webhook normally records the notification without changing that outcome.
+- Webhook idempotency is based on a unique `event_id`. Different event IDs with the same outcome can be recorded for one payment without repeating its state transition.
+- The webhook uses a shared secret for the simulation. It does not verify a real provider signature.
+- Repeating a completed user payment request returns `409`; client payment idempotency keys that return the original result are not implemented.
 
-- Model actual appointment slots and capacity.
-- Create pending payments and finalize them only after a verified provider result.
-- Add client idempotency keys for safe payment-request retries.
-- Distinguish failed payment attempts from final booking failure.
-- Reconcile conflicting or out-of-order notifications with an authoritative provider status.
+## Improvements with more time
+
+- Add an explicit slot and capacity model with transactional reservations.
+- Create `PENDING` payment attempts and finalize them only after a verified provider result.
+- Add client idempotency keys and reuse them when making external provider requests.
+- Allow a new payment attempt after a failed attempt when product rules permit it.
+- Reconcile conflicting or out-of-order provider notifications against authoritative provider state.
+- Add concurrent request tests for booking payment locks and webhook delivery.

@@ -4,6 +4,8 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from sqlalchemy import select
+from app.models.entities import User
 
 from app.core.config import get_settings
 from app.models.entities import (
@@ -303,3 +305,104 @@ def test_failed_payment_and_invalid_webhook_secret(
         },
     )
     assert denied.status_code == 401
+
+
+def test_admin_catalogue_management(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    admin_headers = signup_and_login(client, "admin-test@example.com")
+    normal_headers = signup_and_login(client, "normal-test@example.com")
+
+    body = {
+        "name": f"Admin Centre {uuid4().hex[:8]}",
+        "address": "Bengaluru",
+    }
+
+    # Authentication and authorization are separate checks.
+    assert client.post("/centres", json=body).status_code == 401
+    assert client.post(
+        "/centres",
+        headers=normal_headers,
+        json=body,
+    ).status_code == 403
+
+    admin = db_session.scalar(
+        select(User).where(User.email == "admin-test@example.com")
+    )
+    assert admin is not None
+    admin.is_admin = True
+    db_session.commit()
+
+    created_centre = client.post(
+        "/centres",
+        headers=admin_headers,
+        json=body,
+    )
+    assert created_centre.status_code == 201, created_centre.text
+    centre_id = created_centre.json()["id"]
+
+    updated_centre = client.patch(
+        f"/centres/{centre_id}",
+        headers=admin_headers,
+        json={"address": "Whitefield, Bengaluru"},
+    )
+    assert updated_centre.status_code == 200, updated_centre.text
+    assert updated_centre.json()["address"] == "Whitefield, Bengaluru"
+
+    test_name = f"Vitamin D {uuid4().hex[:8]}"
+    created_test = client.post(
+        "/tests",
+        headers=admin_headers,
+        json={
+            "name": test_name,
+            "description": "Vitamin D test",
+        },
+    )
+    assert created_test.status_code == 201, created_test.text
+    test_id = created_test.json()["id"]
+
+    created_offering = client.post(
+        f"/centres/{centre_id}/tests",
+        headers=admin_headers,
+        json={"test_id": test_id, "price": "700.00"},
+    )
+    assert created_offering.status_code == 201, created_offering.text
+    offering_id = created_offering.json()["offering_id"]
+
+    # The public catalogue shows the new offering.
+    public_list = client.get(f"/centres/{centre_id}/tests")
+    assert public_list.status_code == 200
+    assert any(
+        item["offering_id"] == offering_id
+        for item in public_list.json()
+    )
+
+    # The centre/test pair is unique.
+    duplicate = client.post(
+        f"/centres/{centre_id}/tests",
+        headers=admin_headers,
+        json={"test_id": test_id, "price": "700.00"},
+    )
+    assert duplicate.status_code == 409
+
+    # An admin can deactivate it; public listing then hides it.
+    deactivated = client.patch(
+        f"/offerings/{offering_id}",
+        headers=admin_headers,
+        json={"is_active": False},
+    )
+    assert deactivated.status_code == 200, deactivated.text
+
+    public_list = client.get(f"/centres/{centre_id}/tests")
+    assert all(
+        item["offering_id"] != offering_id
+        for item in public_list.json()
+    )
+
+    # A normal user still cannot modify it.
+    assert client.patch(
+        f"/offerings/{offering_id}",
+        headers=normal_headers,
+        json={"price": "1.00"},
+    ).status_code == 403

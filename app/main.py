@@ -10,6 +10,7 @@ from app.routers.catalogue import router as catalogue_router
 from app.routers.bookings import router as bookings_router
 from app.routers.payments import router as payments_router
 from app.routers.webhooks import router as webhooks_router
+from app.routers.catalogue_admin import router as catalogue_admin_router
 
 app = FastAPI(title=get_settings().app_name)
 
@@ -19,6 +20,7 @@ app.include_router(catalogue_router)
 app.include_router(bookings_router)
 app.include_router(payments_router)
 app.include_router(webhooks_router)
+app.include_router(catalogue_admin_router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
