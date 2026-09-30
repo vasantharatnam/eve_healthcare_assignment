@@ -8,6 +8,7 @@ from app.core.database import engine
 from app.routers.auth import router as auth_router
 from app.routers.catalogue import router as catalogue_router
 from app.routers.bookings import router as bookings_router
+from app.routers.payments import router as payments_router
 
 app = FastAPI(title=get_settings().app_name)
 
@@ -15,6 +16,7 @@ app = FastAPI(title=get_settings().app_name)
 app.include_router(auth_router)
 app.include_router(catalogue_router)
 app.include_router(bookings_router)
+app.include_router(payments_router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
