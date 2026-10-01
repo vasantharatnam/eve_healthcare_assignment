@@ -200,13 +200,15 @@ Use the ID of a pending booking:
 curl -i -X POST http://localhost:8000/payments/ \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -d '{"booking_id":BOOKING_ID,"outcome":"SUCCESS"}'
+  -d '{"booking_id":BOOKING_ID}'
 ```
 
-`SUCCESS` changes the booking to `CONFIRMED`; `FAILED` changes it to `FAILED`. To test both outcomes, create separate bookings. A second payment request for a final booking returns `409`.
+The payment and booking both remain `PENDING` after this request. The API
+returns a payment ID. No real charge is made.
 
-This endpoint does **not** contact a real payment provider. The request supplies the outcome only to simulate payment processing.
-
+Send that payment ID to the simulated webhook endpoint with status `SUCCESS`
+or `FAILED`. A `SUCCESS` webhook changes the payment to `SUCCESS` and the
+booking to `CONFIRMED`; a `FAILED` webhook changes both to `FAILED`.
 ### 5. Simulate a payment webhook
 
 Use the payment ID from the previous step and the secret in `.env`:

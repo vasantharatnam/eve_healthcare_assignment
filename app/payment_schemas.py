@@ -6,9 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class PaymentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+ 
     booking_id: int = Field(gt=0)
-    outcome:Literal["SUCCESS", "FAILED"]
-
+    
 
 class PaymentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

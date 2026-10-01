@@ -216,18 +216,20 @@ def test_payment_and_webhook_retries(
     paid = client.post(
         "/payments/",
         headers=headers,
-        json={"booking_id": booking_id, "outcome": "SUCCESS"},
+        json={"booking_id": booking_id},
     )
     assert paid.status_code == 201, paid.text
     payment_id = paid.json()["id"]
+    assert paid.json()["status"] == "PENDING"
 
-    assert db_session.get(Payment, payment_id).status == "SUCCESS"
-    assert db_session.get(Booking, booking_id).status == "CONFIRMED"
+    db_session.expire_all()
+    assert db_session.get(Payment, payment_id).status == "PENDING"
+    assert db_session.get(Booking, booking_id).status == "PENDING"
 
     second_payment = client.post(
         "/payments/",
         headers=headers,
-        json={"booking_id": booking_id, "outcome": "SUCCESS"},
+        json={"booking_id": booking_id},
     )
     assert second_payment.status_code == 409
 
@@ -245,6 +247,10 @@ def test_payment_and_webhook_retries(
     assert first.status_code == 200, first.text
     assert first.json()["already_processed"] is False
 
+    db_session.expire_all()
+    assert db_session.get(Payment, payment_id).status == "SUCCESS"
+    assert db_session.get(Booking, booking_id).status == "CONFIRMED"
+    
     replay = client.post(
         "/payments/webhook/",
         headers=webhook_headers(),
@@ -273,7 +279,7 @@ def test_payment_and_webhook_retries(
         .count()
         == 1
     )
-    assert db_session.get(Booking, booking_id).status == "CONFIRMED"
+    
 
 
 def test_failed_payment_and_invalid_webhook_secret(
@@ -287,24 +293,43 @@ def test_failed_payment_and_invalid_webhook_secret(
     assert created.status_code == 201, created.text
     booking_id = created.json()["id"]
 
-    failed = client.post(
+    payment_response = client.post(
         "/payments/",
         headers=headers,
-        json={"booking_id": booking_id, "outcome": "FAILED"},
+        json={"booking_id": booking_id},
     )
-    assert failed.status_code == 201, failed.text
-    assert db_session.get(Booking, booking_id).status == "FAILED"
+    assert payment_response.status_code == 201, payment_response.text
+    payment_id = payment_response.json()["id"]
+    assert payment_response.json()["status"] == "PENDING"
+
+    event = {
+        "event_id": f"evt-{uuid4().hex}",
+        "payment_id": payment_id,
+        "status": "FAILED",
+    }
 
     denied = client.post(
         "/payments/webhook/",
         headers={"X-Webhook-Secret": "wrong-secret"},
-        json={
-            "event_id": f"evt-{uuid4().hex}",
-            "payment_id": failed.json()["id"],
-            "status": "FAILED",
-        },
+        json=event,
     )
     assert denied.status_code == 401
+
+    db_session.expire_all()
+    assert db_session.get(Payment, payment_id).status == "PENDING"
+    assert db_session.get(Booking, booking_id).status == "PENDING"
+
+    accepted = client.post(
+        "/payments/webhook/",
+        headers=webhook_headers(),
+        json=event,
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["already_processed"] is False
+
+    db_session.expire_all()
+    assert db_session.get(Payment, payment_id).status == "FAILED"
+    assert db_session.get(Booking, booking_id).status == "FAILED"
 
 
 def test_admin_catalogue_management(

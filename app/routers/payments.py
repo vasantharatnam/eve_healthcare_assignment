@@ -46,17 +46,24 @@ def create_mock_payment(
             detail="Booking is not eligible for payment",
         )
 
+    existing_payment = db.scalar(
+        select(Payment).where(Payment.booking_id == booking.id)
+    )
+
+    if existing_payment is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Payment already exists for this booking",
+        )
+
     payment = Payment(
         booking_id=booking.id,
         amount=booking.amount,
-        status=request.outcome,
+        status="PENDING",
     )
     db.add(payment)
 
-    booking.status = (
-        "CONFIRMED" if request.outcome == "SUCCESS" else "FAILED"
-    )
-
     db.commit()
     db.refresh(payment)
+    
     return payment
