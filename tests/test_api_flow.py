@@ -213,9 +213,14 @@ def test_payment_and_webhook_retries(
     assert created.status_code == 201, created.text
     booking_id = created.json()["id"]
 
+    payment_headers = {
+    **headers,
+    "Idempotency-Key": str(uuid4()),
+    }
+
     paid = client.post(
         "/payments/",
-        headers=headers,
+        headers=payment_headers,
         json={"booking_id": booking_id},
     )
     assert paid.status_code == 201, paid.text
@@ -228,10 +233,11 @@ def test_payment_and_webhook_retries(
 
     second_payment = client.post(
         "/payments/",
-        headers=headers,
+        headers=payment_headers,
         json={"booking_id": booking_id},
     )
-    assert second_payment.status_code == 409
+    assert second_payment.status_code == 201, second_payment.text
+    assert second_payment.json()["id"] == payment_id
 
     event = {
         "event_id": f"evt-{uuid4().hex}",
@@ -250,6 +256,17 @@ def test_payment_and_webhook_retries(
     db_session.expire_all()
     assert db_session.get(Payment, payment_id).status == "SUCCESS"
     assert db_session.get(Booking, booking_id).status == "CONFIRMED"
+
+
+    retry_after_webhook = client.post(
+    "/payments/",
+    headers=payment_headers,
+    json={"booking_id": booking_id},
+    )
+
+    assert retry_after_webhook.status_code == 201
+    assert retry_after_webhook.json()["id"] == payment_id
+    assert retry_after_webhook.json()["status"] == "SUCCESS"
     
     replay = client.post(
         "/payments/webhook/",
@@ -295,7 +312,7 @@ def test_failed_payment_and_invalid_webhook_secret(
 
     payment_response = client.post(
         "/payments/",
-        headers=headers,
+        headers={**headers, "Idempotency-Key": str(uuid4())},
         json={"booking_id": booking_id},
     )
     assert payment_response.status_code == 201, payment_response.text
@@ -431,3 +448,63 @@ def test_admin_catalogue_management(
         headers=normal_headers,
         json={"price": "1.00"},
     ).status_code == 403
+
+
+
+def test_payment_idempotency_key_scope(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    offering = add_offering(db_session)
+    user_headers = signup_and_login(client, "keys@example.com")
+
+    first_booking = create_booking(client, user_headers, offering.id)
+    second_booking = create_booking(client, user_headers, offering.id)
+    assert first_booking.status_code == 201, first_booking.text
+    assert second_booking.status_code == 201, second_booking.text
+
+    first_id = first_booking.json()["id"]
+    second_id = second_booking.json()["id"]
+    key = str(uuid4())
+    headers_with_key = {
+        **user_headers,
+        "Idempotency-Key": key,
+    }
+
+    first_payment = client.post(
+        "/payments/",
+        headers=headers_with_key,
+        json={"booking_id": first_id},
+    )
+    assert first_payment.status_code == 201, first_payment.text
+
+    # One user's key cannot be reassigned to a different booking.
+    reused_for_other_booking = client.post(
+        "/payments/",
+        headers=headers_with_key,
+        json={"booking_id": second_id},
+    )
+    assert reused_for_other_booking.status_code == 409, reused_for_other_booking.text
+
+    # A new key does not create another payment for the first booking.
+    other_key = client.post(
+        "/payments/",
+        headers={
+            **user_headers,
+            "Idempotency-Key": str(uuid4()),
+        },
+        json={"booking_id": first_id},
+    )
+    assert other_key.status_code == 409
+
+    # The second booking can use its own key.
+    second_payment = client.post(
+        "/payments/",
+        headers={
+            **user_headers,
+            "Idempotency-Key": str(uuid4()),
+        },
+        json={"booking_id": second_id},
+    )
+    assert second_payment.status_code == 201, second_payment.text
+    assert second_payment.json()["id"] != first_payment.json()["id"]

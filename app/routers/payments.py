@@ -1,16 +1,44 @@
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.dependencies import get_db
-from app.models.entities import Booking, Payment, User
+from app.models.entities import (
+    Booking,
+    Payment,
+    PaymentIdempotencyKey,
+    User,
+)
 from app.payment_schemas import PaymentCreate, PaymentResponse
 
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
+
+def  payment_for_key(
+     db:Session,
+     record: PaymentIdempotencyKey,
+     booking_id: int   
+) -> Payment:
+    if record.booking_id != booking_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency key already used for a different booking",
+        )
+
+    payment = db.get(Payment, record.payment_id)
+    if payment is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Idempotency key points to a non-existent payment",
+        )
+
+    return payment
 
 
 @router.post(
@@ -22,10 +50,14 @@ def create_mock_payment(
     request: PaymentCreate,
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
+    idempotency_key: Annotated[
+        UUID,
+        Header(alias="Idempotency-Key"),
+    ],
 ) -> Payment:
-    # Lock this booking until commit. Concurrent payment requests for the
-    # same booking will run one after the other.
-    booking = db.scalar(
+    key = str(idempotency_key)
+
+    booking =  db.scalar(
         select(Booking)
         .where(
             Booking.id == request.booking_id,
@@ -40,6 +72,19 @@ def create_mock_payment(
             detail="Booking not found",
         )
 
+    # Check the key BEFORE checking the booking's current status. A retry
+    # must still work after a webhook has confirmed the booking.
+
+    existing_key = db.scalar(
+        select(PaymentIdempotencyKey).where(
+            PaymentIdempotencyKey.user_id == current_user.id,
+            PaymentIdempotencyKey.key == key,
+        )
+    )
+
+    if existing_key is not None:
+        return payment_for_key(db, existing_key, request.booking_id)
+
     if booking.status != "PENDING":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -53,7 +98,7 @@ def create_mock_payment(
     if existing_payment is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Payment already exists for this booking",
+            detail="A payment is already in progress for this booking",
         )
 
     payment = Payment(
@@ -62,8 +107,34 @@ def create_mock_payment(
         status="PENDING",
     )
     db.add(payment)
+    db.flush()  # Obtain payment.id inside this transaction.
 
-    db.commit()
+    db.add(
+        PaymentIdempotencyKey(
+            user_id=current_user.id,
+            booking_id=booking.id,
+            payment_id=payment.id,
+            key=key,
+        )
+    )
+
+    try:
+        db.commit()
+    except IntegrityError:
+        # Another request may have committed the same user/key while this
+        # request was in progress, possibly for another booking.
+        db.rollback()
+
+        winning_key = db.scalar(
+            select(PaymentIdempotencyKey).where(
+                PaymentIdempotencyKey.user_id == current_user.id,
+                PaymentIdempotencyKey.key == key,
+            )
+        )
+        if winning_key is None:
+            raise
+
+        return payment_for_key(db, winning_key, booking.id)
+
     db.refresh(payment)
-    
     return payment

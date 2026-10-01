@@ -200,8 +200,15 @@ Use the ID of a pending booking:
 curl -i -X POST http://localhost:8000/payments/ \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Idempotency-Key: REUSE_THE_SAME_UUID_ON_RETRY"\
   -d '{"booking_id":BOOKING_ID}'
 ```
+
+Generate one random UUID when starting a payment operation. If the request
+times out, retry with the same UUID and booking ID. The API returns the same
+payment ID and its current status. Reusing that UUID for another booking
+returns 409. A new UUID for a booking that already has a payment also
+returns 409.
 
 The payment and booking both remain `PENDING` after this request. The API
 returns a payment ID. No real charge is made.

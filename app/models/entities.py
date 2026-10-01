@@ -139,3 +139,31 @@ class WebhookEvent(Base):
     processed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class PaymentIdempotencyKey(Base):
+    __tablename__ = "payment_idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "key",
+            name="uq_payment_idempotency_key_user_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    booking_id: Mapped[int] = mapped_column(
+        ForeignKey("bookings.id", ondelete="RESTRICT"), nullable=False
+    )
+    payment_id: Mapped[int] = mapped_column(
+        ForeignKey("payments.id", ondelete="RESTRICT"), nullable=False
+    )
+
+    key: Mapped[str] = mapped_column(String(36), nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
